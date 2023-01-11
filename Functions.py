@@ -1,15 +1,20 @@
-    # Functions to be used in the JN for the math seminar
+# Functions to be used in the JN for the math seminar
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data import TensorDataset, random_split
+from torchvision import datasets, transforms
+import torchvision
+from torch.utils.data import Subset
 
 import pandas as pd
 import time
 
-def plot_result(X, Y, x_label, y_label, title, loglog = False):
+
+def plot_result(X, Y, x_label, y_label, title, loglog=False):
     """
     Support function to plot the results of the numerical experiments
     """
@@ -201,6 +206,7 @@ def create_dataset(x, y):
 
     return x_train, x_test, y_train, y_test
 
+
 def set_up_MLP(X, seed, B, L, drop_out_p, info=False):
     # Use the model
     torch.manual_seed(seed)
@@ -216,195 +222,128 @@ def set_up_MLP(X, seed, B, L, drop_out_p, info=False):
 
 
 class StudentTeacher(nn.Module):
-    def __init__(self, alpha=0.5):
+    """
+    In this implementation I used the nn.Sequential method in order to create the environment.
+    """
+
+    def __init__(self,  hidden_size_s, hidden_size_t, input_size, output_size, depth, p=0.3, alpha=0.5):
+        """
+        This class implements a teacher-student setting. Both teacher and students are genereted iteratively.
+        The weights are normalised.
+        "hidden_size_*": represents the number of units in each hidden layer. s stands for student, t for teacher
+        "depth": is the number of hidden layers
+        We used ReLU as the activation and we perform weight normalisation finally, it creates a Sequential container
+        which contains all layers and define it as a model.
+        """
         super().__init__()
-        self.alpha = alpha
-        self.teacher = nn.Sequential(
-            nn.Linear(784, 500),
-            nn.ReLU(),
-            nn.Linear(500, 250),
-            nn.ReLU(),
-            nn.Linear(250, 10),
-            nn.Softmax(dim=1)
-        )
-        self.student = nn.Sequential(
-            nn.Linear(784, 300),
-            nn.ReLU(),
-            nn.Linear(300, 100),
-            nn.ReLU(),
-            nn.Linear(100, 10),
-            nn.Softmax(dim=1)
-        )
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.alpha = torch.tensor(alpha).to(device)
+
+        # build explicitly the layers in the middle
+        layers_student = []
+        layers_teacher = []
+
+        # teacher
+        for i in range(depth - 1):
+            layers_teacher.append(nn.Linear(hidden_size_t if i else input_size, hidden_size_t).to(device))
+            layers_teacher.append(nn.ReLU())
+            # probability of drop out
+            layers_teacher.append(nn.Dropout(p))
+            #layers_teacher.append(nn.utils.weight_norm(layers_teacher[-2], dim=None))
+
+        # add the softmax
+        layers_teacher.append(nn.Linear(hidden_size_t, output_size).to(device))
+        layers_teacher.append(nn.Softmax(dim=1).to(device))
+        self.teacher = nn.Sequential(*layers_teacher)
+
+        # student
+        for i in range(depth - 1):
+            layers_student.append(nn.Linear(hidden_size_s if i else input_size, hidden_size_s).to(device))
+            layers_student.append(nn.ReLU())
+            # probability of drop out
+            layers_teacher.append(nn.Dropout(p))
+            #layers_student.append(nn.utils.weight_norm(layers_student[-2], dim=None))
+
+        # the dimension of the softmax is 10 since we are dealing with the MNIST problem
+        layers_student.append((nn.Linear(hidden_size_s, output_size)).to(device))
+        layers_student.append(nn.Softmax(dim=1).to(device))
+        self.student = nn.Sequential(*layers_student)
 
     def forward(self, x):
         teacher_output = self.teacher(x)
         student_output = self.student(x)
         return teacher_output, student_output
 
-    def train(self, train_data, train_target, test_data, test_target, alpha, nb_epochs):
+    def train(self, train_dataloader, test_dataloader, number_epochs):
         criterion = nn.KLDivLoss()
-        optimizer = optim.Adam(self.parameters())
+        optimizer = optim.Adam(self.student.parameters())
+        # use the GPU!
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        for epoch in range(nb_epochs):
-            optimizer.zero_grad()
-            teacher_output, student_output = self.forward(train_data)
-            distillation_loss = criterion(nn.LogSoftmax(dim=1)(student_output), teacher_output) * self.alpha
-            classification_loss = nn.CrossEntropyLoss()(student_output, train_target) * (1 - self.alpha)
-            loss = distillation_loss + classification_loss
-            loss.backward()
-            optimizer.step()
+        number_epochs = torch.tensor(number_epochs).to(device)
 
-            # Print the current loss and accuracy on the test set
+        all_acc = []
+        all_losses = []
+        for epoch in range(number_epochs):
+            # we are using the dataloaders with minibatches
+
+            accuracies = []
+            losses = []
+
+            for idx, (train_data, train_target) in enumerate(train_dataloader):
+                # pass the training tensors to the GPU
+                train_data = train_data.reshape(-1, 28*28)
+                train_data, train_target = train_data.to(device), train_target.to(device)
+                # forward passage in the network
+                teacher_output, student_output = self.forward(train_data)
+                # compute the loss
+                distillation_loss = criterion(nn.LogSoftmax(dim=1)(student_output), teacher_output) * self.alpha
+                classification_loss = nn.CrossEntropyLoss()(student_output, train_target) * (1 - self.alpha)
+                loss = distillation_loss + classification_loss
+                # backpropagation
+                loss.backward()
+                optimizer.step()
+
             with torch.no_grad():
-                student_output = self.forward(test_data)[1]
-                test_loss = nn.CrossEntropyLoss()(student_output, test_target)
-                test_acc = (student_output.argmax(dim=1) == test_target).float().mean()
-                print(f'Epoch {epoch + 1}/{nb_epochs}, Loss: {test_loss:.4f}, Acc: {test_acc:.4f}')
+                for test_data, test_target in test_dataloader:
+                    # passing the tensors to the cpu
+                    test_data, test_target = test_data.to(device), test_target.to(device)
+                    test_data = test_data.reshape(-1, 28 * 28)
+                    student_output = self.forward(test_data)[1]
+                    test_loss = nn.CrossEntropyLoss()(student_output, test_target)
+                    losses.append(test_loss)
+                    test_acc = (student_output.argmax(dim=1) == test_target).float().mean()
+                    accuracies.append(test_acc)
+
+            all_acc.append(torch.mean(torch.tensor(accuracies)))
+            all_losses.append(torch.mean(torch.tensor(losses)))
+
+            if (epoch + 1) % 10 == 0:
+                print(f'Epoch {epoch + 1}/{number_epochs}, Loss: {all_losses[epoch]:.4f}, Acc: {all_acc[epoch]:.4f}')
+
+        return all_losses, all_acc
+
+    def predict(self, x):
+        self.eval()
+        with torch.no_grad():
+            student_output = self.student(x)
+            prediction = student_output.argmax(dim=1)
+        return prediction
 
 
+def build_mnist_dataset():
+    transform = transforms.ToTensor()
 
-class teacher_student_MLP:
-    def __init__(self, model_set_up, N_teachers, Ms, seeds):
-        # true targer
-        self.y_true_test = None
-        self.y_true_train = None
-        # those are lists of MLPs
-        self.teachers = None
-        self.students = None
-        # those are dictionaries containing the results of the MLPs
-        self.teachers_results = None
-        self.students_results = None
-        # class that sets up the MLP
-        self.model_set_up = model_set_up
-        # number of teachers
-        self.N_teachers = N_teachers
-        # number of uniform samples
-        self.Ms = Ms
-        # seeds
-        self.seeds = seeds
+    trainset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    # get a subset
+    trainset = Subset(trainset, indices=range(len(trainset) // 10))
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=600, shuffle=True)
 
-    def train_teachers(self, x_train, y_train, x_test, y_test, epochs, seed=123, B=100, L=5, drop_out_p=0.3,
-                       info=False, function):
-        """
-        Notice that the teacher NN are trained using a lot of data, therefore the resolution for the x_train variable
-        will be high. Usually the teacher NN have access to more data or/and to better computational infrastructures
-        than the students counterpart, therefore this is legit.
-        """
-        # store the info in a dictionary
-        self.teachers_results = {
-            "losses": [],
-            "preds" : [],
-            "diffs" : [],
-            "actuals": [],
-            "model" : [],
-            "valid_results_dict" : [],
-            "epochs" : [],
-            "x_students" : [],
-            "y_students" : []
-        }
-        # train all the teachers
-        for _ in range(self.N_teachers):
-            model = self.model_set_up(x_train, seed, B, L, drop_out_p, info)
-            losses, preds, diffs, actuals, model, valid_results_dict, epochs = train(
-                model=model,
-                y_train=y_train,
-                categorical_train=[],           # no categorical data in this regression problem
-                continuous_train=x_train,
-                y_test=y_test,
-                categorical_valid=[],           # no categorical data in this regression problem
-                continuous_valid=x_test,
-                learning_rate=0.01,
-                epochs=epochs,
-                print_out_interval=epochs/10,
-                continuous=True)
-            self.teachers_results["losses"].append(losses)
-            self.teachers_results["preds"].append(preds)
-            self.teachers_results["diffs"].append(diffs)
-            self.teachers_results["actuals"].append(actuals)
-            self.teachers_results["model"].append(model)
-            self.teachers_results["valid_results_dict"].append(valid_results_dict)
-            self.teachers_results["epochs"].append(epochs)
+    testset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+    # get a subset
+    testset = Subset(testset, indices=range(len(testset) // 5))
+    testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=True)
 
-            # capsule containing the x and y for the different m
-            capsule_x = []
-            capsule_y = []
-            for m in self.Ms:
-                # equally spaced points with a resolution of 1/M
-                xs = np.arange(-0.5, 0.5, 1/m)
-                # the output of the teachers, that would be the imput of the students
-                x = model(xs)
-                # the true value of the function in the points xs
-                y = function(x)
-                capsule_x.append(x)
-                capsule_y.append(y)
-
-            self.teachers_results["x_students"].append(capsule_x)
-            self.teachers_results["y_students"].append(capsule_y)
-
-
-
-    def train_students(self, epochs, B=100, L=5, drop_out_p=0.3, info=False):
-        """
-        We are assigning a student to each teacher!
-        """
-        # store the info in a dictionary
-        self.students_results = {
-            "losses": [],
-            "preds": [],
-            "diffs": [],
-            "actuals": [],
-            "model": [],
-            "valid_results_dict": [],
-            "epochs": [],
-            "x_students": [],
-            "y_students": []
-        }
-
-        for seed in self.seeds:
-            for j in range(self.N_teachers):
-                xs_per_student = self.teachers_results["x_students"][j]
-                ys_per_student = self.teachers_results["y_students"][j]
-                for i in range(len(self.Ms)):
-                    # consider the different resolutions defined by 1/M
-                    x_train, x_test, y_train, y_test = create_dataset(xs_per_student[i], ys_per_student[i])
-                    model = self.model_set_up(x_train, seed, B, L, drop_out_p, info)
-                    losses, preds, diffs, actuals, model, valid_results_dict, epochs = train(
-                        model=model, y_train=y_train,
-                        categorical_train=[],
-                        continuous_train=x_train,
-                        y_test=y_test,
-                        categorical_valid=[],
-                        continuous_valid=x_test,
-                        learning_rate=0.01,
-                        epochs=epochs,
-                        print_out_interval=epochs / 10,
-                        continuous=True)
-                    # to differentiate the results are stored as (measure/item, MS, Seed)
-                    self.students_results["losses"].append((losses, self.Ms[i], seed))
-                    self.students_results["preds"].append((preds, self.Ms[i], seed))
-                    self.students_results["diffs"].append((diffs, self.Ms[i], seed))
-                    self.students_results["actuals"].append((actuals, self.Ms[i], seed))
-                    self.students_results["model"].append((model, self.Ms[i], seed))
-                    self.students_results["valid_results_dict"].append((valid_results_dict, self.Ms[i], seed))
-                    self.students_results["epochs"].append((epochs, self.Ms[i], seed))
-
-
-    def evaluate_students(self):
-        """
-        This function takes care to evaluate student's degree of learnign and to plot some useful graphs.
-        """
-        # losses
-        unwrap_losses = {}
-        aggregated_losses = {}
-        for m in self.Ms:
-            max_len = len(self.students_results["losses"][0])
-            unwrap_losses[m].append([losses[0] for losses in self.students_results["losses"] if losses[1] == m])
-            temp = [(losses[i],i) for losses in unwrap_losses[m] for i in range(max_len)]
-            # TODO controlla come disassemblare i dati, in particolare controlla come fare la media degli elementi con
-            # TODO lo stesso seed
-
-            aggregated_losses[m] = [losses[0] for losses in temp if i == losses[1] for i in range(max_len)]
-
-
+    return trainloader, testloader
 
 
