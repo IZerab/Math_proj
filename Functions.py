@@ -103,12 +103,10 @@ class MLPRegressor(nn.Module):
             x = self.layers(x)
         return x
 
-
-    def train(model, y_train, categorical_train, continuous_train,
-              y_test, categorical_valid, continuous_valid,
-              learning_rate=0.001, epochs=300, print_out_interval=2, continuous=True):
+    def train(model, y_train, x_train, y_test, x_test, categorical_train=[], categorical_valid=[],
+                 learning_rate=0.001, epochs=300, print_out_interval=10, continuous=True):
         global criterion
-        criterion = nn.MSELoss()  # we'll convert this to RMSE later
+        criterion = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         start_time = time.time()
         model.train()
@@ -119,9 +117,9 @@ class MLPRegressor(nn.Module):
         for i in range(epochs):
             i += 1  # Zero indexing trick to start the print out at epoch 1
             if not continuous:
-                y_pred = model(categorical_train, continuous_train, continuous=continuous)
+                y_pred = model(categorical_train, x_train, continuous=continuous)
             else:
-                y_pred = model(continuous_train)
+                y_pred = model(x_train)
             preds.append(y_pred)
             loss = torch.sqrt(criterion(y_pred, y_train))  # RMSE
             losses.append(loss)
@@ -143,9 +141,9 @@ class MLPRegressor(nn.Module):
         # Evaluate model
         with torch.no_grad():
             if not continuous:
-                y_val = model(categorical_valid, continuous_valid, continuous=continuous)
+                y_val = model(categorical_valid, x_test, continuous=continuous)
             else:
-                y_val = model(continuous_valid)
+                y_val = model(x_test)
             loss = torch.sqrt(criterion(y_val, y_test))
         print(f'RMSE: {loss:.8f}')
 
@@ -154,7 +152,7 @@ class MLPRegressor(nn.Module):
         diffs = []
         actuals = []
 
-        for i in range(len(continuous_valid)):
+        for i in range(len(x_test)):
             diff = np.abs(y_val[i].item() - y_test[i].item())
             pred = y_val[i].item()  # explain why you use item
             actual = y_test[i].item()
@@ -172,7 +170,8 @@ class MLPRegressor(nn.Module):
         # Save model
         torch.save(model.state_dict(), f'./model_artifacts/first_func_{epochs}.pt')
         # Return components to use later
-        return losses, preds, diffs, actuals, model, valid_results_dict, epochs
+        # return losses, preds, diffs, actuals, model, valid_results_dict, epochs
+        return losses
 
 
 def create_dataset(x, y):
@@ -220,12 +219,13 @@ def set_up_MLP(X, seed, B, L, drop_out_p, info=False):
         print('=' * 80)
     return model
 
+
 class StudentTeacher_classification(nn.Module):
     """
     In this implementation I used the nn.Sequential method in order to create the environment.
     """
 
-    def __init__(self,  hidden_size_s=10, hidden_size_t=30, input_size=1, output_size=1, depth=10, p=0.3, alpha=0.5):
+    def __init__(self, hidden_size_s=10, hidden_size_t=30, input_size=1, output_size=1, depth=10, p=0.3, alpha=0.5):
         """
         This class implements a teacher-student setting. Both teacher and students are genereted iteratively.
         The weights are normalised.
@@ -248,7 +248,7 @@ class StudentTeacher_classification(nn.Module):
             layers_teacher.append(nn.ReLU())
             # probability of drop out
             layers_teacher.append(nn.Dropout(p))
-            #layers_teacher.append(nn.utils.weight_norm(layers_teacher[-2], dim=None))
+            # layers_teacher.append(nn.utils.weight_norm(layers_teacher[-2], dim=None))
 
         # add the softmax
         layers_teacher.append(nn.Linear(hidden_size_t, output_size).to(device))
@@ -261,7 +261,7 @@ class StudentTeacher_classification(nn.Module):
             layers_student.append(nn.ReLU())
             # probability of drop out
             layers_teacher.append(nn.Dropout(p))
-            #layers_student.append(nn.utils.weight_norm(layers_student[-2], dim=None))
+            # layers_student.append(nn.utils.weight_norm(layers_student[-2], dim=None))
 
         # the dimension of the softmax is 10 since we are dealing with the MNIST problem
         layers_student.append((nn.Linear(hidden_size_s, output_size)).to(device))
@@ -291,7 +291,7 @@ class StudentTeacher_classification(nn.Module):
 
             for idx, (train_data, train_target) in enumerate(train_dataloader):
                 # pass the training tensors to the GPU
-                train_data = train_data.reshape(-1, 28*28)
+                train_data = train_data.reshape(-1, 28 * 28)
                 train_data, train_target = train_data.to(device), train_target.to(device)
                 # forward passage in the network
                 teacher_output, student_output = self.forward(train_data)
@@ -345,7 +345,9 @@ def build_mnist_dataset():
 
     return trainloader, testloader
 
+
 import seaborn as sns
+
 
 class ModelEvaluator:
     def __init__(self, x_train, x_test, y_train, y_test, hidden_size_s, T):
@@ -371,7 +373,7 @@ class ModelEvaluator:
 
     def plot_models(self, R):
         sns.set()
-        #plt.figure(figsize=(12, 8))
+        # plt.figure(figsize=(12, 8))
         x = np.linspace(-0.5, 0.5, int(R))
         for B in self.hidden_size_s:
             nested_y = []
@@ -379,9 +381,10 @@ class ModelEvaluator:
                 y = model.predict(x)
                 nested_y.append(y)
             num_lists = len(nested_y)
-            y_mean = [sum(col)/num_lists for col in zip(*nested_y)]
+            y_mean = [sum(col) / num_lists for col in zip(*nested_y)]
             y_err = np.std(y_mean)
-            plt.errorbar(x, y_mean, yerr=y_err,fmt='o', ecolor='lightgray', markersize=5, capsize=2, label="B = {}".format(B))
+            plt.errorbar(x, y_mean, yerr=y_err, fmt='o', ecolor='lightgray', markersize=5, capsize=2,
+                         label="B = {}".format(B))
             plt.plot(x, y_mean, '-', linewidth=2, label="B = {}".format(B))
         plt.legend()
         plt.xlabel("Input Value")
@@ -389,12 +392,9 @@ class ModelEvaluator:
         plt.title("Model Predictions for Different Network Widths")
 
 
-
-
-
-
 ######################################################################################
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class StudentNet(nn.Module):
     def __init__(self, input_size=1, hidden_size=16, output_size=1, depth=7, dropout_p=0.5):
@@ -412,9 +412,10 @@ class StudentNet(nn.Module):
     def forward(self, x):
         for i in range(0, len(self.fc), 3):
             x = torch.relu(self.fc[i](x))
-            x = self.fc[i+1](x)
-            x = self.fc[i+2](x)
+            x = self.fc[i + 1](x)
+            x = self.fc[i + 2](x)
         return x
+
 
 class TeacherNet(nn.Module):
     def __init__(self, input_size=1, hidden_size=32, output_size=1, depth=7, dropout_p=0.5):
@@ -432,14 +433,16 @@ class TeacherNet(nn.Module):
     def forward(self, x):
         for i in range(0, len(self.fc), 3):
             x = torch.relu(self.fc[i](x))
-            x = self.fc[i+1](x)
-            x = self.fc[i+2](x)
+            x = self.fc[i + 1](x)
+            x = self.fc[i + 2](x)
         return x
+
 
 class StudentTeacher:
     def __init__(self, input_size=1, hidden_size_student=5, hidden_size_teacher=10, output_size=1, depth_student=5,
-                        depth_teacher=5, lr=0.001, weight_decay=1e-5, epochs=10000, device="cuda"):
-
+                 depth_teacher=5, lr=0.001, weight_decay=1e-5, epochs=10000, device="cuda"):
+        self.teacher = None
+        self.student = None
         self.criterion = None
         self.input_size = input_size
         self.hidden_size_student = hidden_size_student
@@ -453,13 +456,13 @@ class StudentTeacher:
         self.alpha = 0.1
         self.loss_history = []
 
-        self.student = StudentNet(input_size=self.input_size, hidden_size=self.hidden_size_student,
-                                  output_size=self.output_size, depth=self.depth_student).to(device)
-        self.teacher = TeacherNet(input_size=self.input_size, hidden_size=self.hidden_size_teacher,
-                                  output_size=self.output_size, depth=self.depth_teacher).to(device)
-
     def fit(self, X, y, epochs=1000):
+        self.student = set_up_MLP(X, seed=42, B=self.hidden_size_student, L=self.depth_student, drop_out_p=0.5,
+                                  info=False).to(device)
+        self.teacher = set_up_MLP(X, seed=42, B=self.hidden_size_teacher, L=self.depth_teacher, drop_out_p=0.5,
+                                  info=False).to(device)
         self.epochs = epochs
+
         criterion = nn.MSELoss()
         self.criterion = criterion
         optimizer_student = optim.Adam(self.student.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -479,7 +482,7 @@ class StudentTeacher:
             # use teacher network to generate activations and predictions for student network
             with torch.no_grad():
                 y_teacher_soft = F.softmax(y_teacher, dim=1)
-                #teacher_activations = self.teacher.get_activations(X)
+                # teacher_activations = self.teacher.get_activations(X)
 
             # train student network using teacher activations and predictions
             optimizer_student.zero_grad()
