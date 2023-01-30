@@ -382,12 +382,11 @@ class ModelEvaluator:
             y_mean = [sum(col)/num_lists for col in zip(*nested_y)]
             y_err = np.std(y_mean)
             plt.errorbar(x, y_mean, yerr=y_err,fmt='o', ecolor='lightgray', markersize=5, capsize=2, label="B = {}".format(B))
-            plt.plot(x, y_mean, '-', color='C0', linewidth=2, label="B = {}".format(B))
+            plt.plot(x, y_mean, '-', linewidth=2, label="B = {}".format(B))
         plt.legend()
         plt.xlabel("Input Value")
         plt.ylabel("Prediction")
         plt.title("Model Predictions for Different Network Widths")
-        plt.show()
 
 
 
@@ -398,37 +397,49 @@ class ModelEvaluator:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class StudentNet(nn.Module):
-    def __init__(self, input_size=1, hidden_size=16, output_size=1, depth=7):
+    def __init__(self, input_size=1, hidden_size=16, output_size=1, depth=7, dropout_p=0.5):
         super(StudentNet, self).__init__()
         self.fc = nn.ModuleList()
         self.fc.append(nn.Linear(input_size, hidden_size))
+        self.fc.append(nn.BatchNorm1d(hidden_size))
+        self.fc.append(nn.Dropout(dropout_p))
         for i in range(depth - 2):
             self.fc.append(nn.Linear(hidden_size, hidden_size))
+            self.fc.append(nn.BatchNorm1d(hidden_size))
+            self.fc.append(nn.Dropout(dropout_p))
         self.fc.append(nn.Linear(hidden_size, output_size))
 
     def forward(self, x):
-        for i in range(len(self.fc) - 1):
+        for i in range(0, len(self.fc), 3):
             x = torch.relu(self.fc[i](x))
-        x = self.fc[-1](x)
+            x = self.fc[i+1](x)
+            x = self.fc[i+2](x)
         return x
 
 class TeacherNet(nn.Module):
-    def __init__(self, input_size=1, hidden_size=32, output_size=1, depth=7):
+    def __init__(self, input_size=1, hidden_size=32, output_size=1, depth=7, dropout_p=0.5):
         super(TeacherNet, self).__init__()
         self.fc = nn.ModuleList()
         self.fc.append(nn.Linear(input_size, hidden_size))
+        self.fc.append(nn.BatchNorm1d(hidden_size))
+        self.fc.append(nn.Dropout(dropout_p))
         for i in range(depth - 2):
             self.fc.append(nn.Linear(hidden_size, hidden_size))
+            self.fc.append(nn.BatchNorm1d(hidden_size))
+            self.fc.append(nn.Dropout(dropout_p))
         self.fc.append(nn.Linear(hidden_size, output_size))
 
     def forward(self, x):
-        for i in range(len(self.fc) - 1):
+        for i in range(0, len(self.fc), 3):
             x = torch.relu(self.fc[i](x))
-        x = self.fc[-1](x)
+            x = self.fc[i+1](x)
+            x = self.fc[i+2](x)
         return x
 
 class StudentTeacher:
-    def __init__(self, input_size=1, hidden_size_student=10, hidden_size_teacher=30, output_size=1, depth_student=7, depth_teacher=7, lr=0.01, weight_decay=1e-5, epochs=100, device="cuda"):
+    def __init__(self, input_size=1, hidden_size_student=5, hidden_size_teacher=10, output_size=1, depth_student=5,
+                        depth_teacher=5, lr=0.001, weight_decay=1e-5, epochs=10000, device="cuda"):
+
         self.criterion = None
         self.input_size = input_size
         self.hidden_size_student = hidden_size_student
@@ -439,7 +450,7 @@ class StudentTeacher:
         self.lr = lr
         self.weight_decay = weight_decay
         self.epochs = epochs
-        self.alpha = 0.3
+        self.alpha = 0.1
         self.loss_history = []
 
         self.student = StudentNet(input_size=self.input_size, hidden_size=self.hidden_size_student,
@@ -447,7 +458,7 @@ class StudentTeacher:
         self.teacher = TeacherNet(input_size=self.input_size, hidden_size=self.hidden_size_teacher,
                                   output_size=self.output_size, depth=self.depth_teacher).to(device)
 
-    def fit(self, X, y, epochs=100):
+    def fit(self, X, y, epochs=1000):
         self.epochs = epochs
         criterion = nn.MSELoss()
         self.criterion = criterion
@@ -474,9 +485,8 @@ class StudentTeacher:
             optimizer_student.zero_grad()
             y_pred = self.student(X)
             student_loss = criterion(y_pred, y)
-            distillation_loss = F.kl_div(F.softmax(y_pred, dim=1), y_teacher_soft,
-                                         reduction='batchmean')
-            total_loss = (1 - self.alpha) * student_loss + self.alpha * distillation_loss
+            distillation_loss = F.kl_div(F.softmax(y_pred, dim=1), y_teacher_soft, reduction='batchmean')
+            total_loss = student_loss + self.alpha * distillation_loss
             self.loss_history.append(total_loss)
             total_loss.backward()
             optimizer_student.step()
@@ -514,6 +524,5 @@ class StudentTeacher:
         plt.plot(losses)
         plt.xlabel('Epochs')
         plt.ylabel('Loss')
-        plt.yscale('log')
         plt.title('Training Loss over Epochs')
         plt.show()
