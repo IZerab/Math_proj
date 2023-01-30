@@ -104,75 +104,75 @@ class MLPRegressor(nn.Module):
         return x
 
 
-def train(model, y_train, categorical_train, continuous_train,
-          y_test, categorical_valid, continuous_valid,
-          learning_rate=0.001, epochs=300, print_out_interval=2, continuous=True):
-    global criterion
-    criterion = nn.MSELoss()  # we'll convert this to RMSE later
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    start_time = time.time()
-    model.train()
+    def train(model, y_train, categorical_train, continuous_train,
+              y_test, categorical_valid, continuous_valid,
+              learning_rate=0.001, epochs=300, print_out_interval=2, continuous=True):
+        global criterion
+        criterion = nn.MSELoss()  # we'll convert this to RMSE later
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        start_time = time.time()
+        model.train()
 
-    losses = []
-    preds = []
+        losses = []
+        preds = []
 
-    for i in range(epochs):
-        i += 1  # Zero indexing trick to start the print out at epoch 1
-        if not continuous:
-            y_pred = model(categorical_train, continuous_train, continuous=continuous)
-        else:
-            y_pred = model(continuous_train)
-        preds.append(y_pred)
-        loss = torch.sqrt(criterion(y_pred, y_train))  # RMSE
-        losses.append(loss)
+        for i in range(epochs):
+            i += 1  # Zero indexing trick to start the print out at epoch 1
+            if not continuous:
+                y_pred = model(categorical_train, continuous_train, continuous=continuous)
+            else:
+                y_pred = model(continuous_train)
+            preds.append(y_pred)
+            loss = torch.sqrt(criterion(y_pred, y_train))  # RMSE
+            losses.append(loss)
 
-        if i % print_out_interval == 1:
-            print(f'epoch: {i:3}  loss: {loss.item():10.8f}')
+            if i % print_out_interval == 1:
+                print(f'epoch: {i:3}  loss: {loss.item():10.8f}')
 
-        # initialize the problem
-        optimizer.zero_grad()
-        # backpropagation
-        loss.backward()
-        # take a step in the optimization problem
-        optimizer.step()
+            # initialize the problem
+            optimizer.zero_grad()
+            # backpropagation
+            loss.backward()
+            # take a step in the optimization problem
+            optimizer.step()
 
-    print('=' * 80)
-    print(f'epoch: {i:3}  loss: {loss.item():10.8f}')  # print the last line
-    print(f'Duration: {time.time() - start_time:.0f} seconds')  # print the time elapsed
+        print('=' * 80)
+        print(f'epoch: {i:3}  loss: {loss.item():10.8f}')  # print the last line
+        print(f'Duration: {time.time() - start_time:.0f} seconds')  # print the time elapsed
 
-    # Evaluate model
-    with torch.no_grad():
-        if not continuous:
-            y_val = model(categorical_valid, continuous_valid, continuous=continuous)
-        else:
-            y_val = model(continuous_valid)
-        loss = torch.sqrt(criterion(y_val, y_test))
-    print(f'RMSE: {loss:.8f}')
+        # Evaluate model
+        with torch.no_grad():
+            if not continuous:
+                y_val = model(categorical_valid, continuous_valid, continuous=continuous)
+            else:
+                y_val = model(continuous_valid)
+            loss = torch.sqrt(criterion(y_val, y_test))
+        print(f'RMSE: {loss:.8f}')
 
-    # Create empty list to store my results
-    preds = []
-    diffs = []
-    actuals = []
+        # Create empty list to store my results
+        preds = []
+        diffs = []
+        actuals = []
 
-    for i in range(len(continuous_valid)):
-        diff = np.abs(y_val[i].item() - y_test[i].item())
-        pred = y_val[i].item()  # explain why you use item
-        actual = y_test[i].item()
+        for i in range(len(continuous_valid)):
+            diff = np.abs(y_val[i].item() - y_test[i].item())
+            pred = y_val[i].item()  # explain why you use item
+            actual = y_test[i].item()
 
-        diffs.append(diff)
-        preds.append(pred)
-        actuals.append(actual)
+            diffs.append(diff)
+            preds.append(pred)
+            actuals.append(actual)
 
-    valid_results_dict = {
-        'predictions': preds,
-        'diffs': diffs,
-        'actuals': actuals
-    }
+        valid_results_dict = {
+            'predictions': preds,
+            'diffs': diffs,
+            'actuals': actuals
+        }
 
-    # Save model
-    torch.save(model.state_dict(), f'./model_artifacts/first_func_{epochs}.pt')
-    # Return components to use later
-    return losses, preds, diffs, actuals, model, valid_results_dict, epochs
+        # Save model
+        torch.save(model.state_dict(), f'./model_artifacts/first_func_{epochs}.pt')
+        # Return components to use later
+        return losses, preds, diffs, actuals, model, valid_results_dict, epochs
 
 
 def create_dataset(x, y):
@@ -220,13 +220,12 @@ def set_up_MLP(X, seed, B, L, drop_out_p, info=False):
         print('=' * 80)
     return model
 
-
-class StudentTeacher(nn.Module):
+class StudentTeacher_classification(nn.Module):
     """
     In this implementation I used the nn.Sequential method in order to create the environment.
     """
 
-    def __init__(self,  hidden_size_s, hidden_size_t, input_size, output_size, depth, p=0.3, alpha=0.5):
+    def __init__(self,  hidden_size_s=10, hidden_size_t=30, input_size=1, output_size=1, depth=10, p=0.3, alpha=0.5):
         """
         This class implements a teacher-student setting. Both teacher and students are genereted iteratively.
         The weights are normalised.
@@ -346,4 +345,175 @@ def build_mnist_dataset():
 
     return trainloader, testloader
 
+import seaborn as sns
 
+class ModelEvaluator:
+    def __init__(self, x_train, x_test, y_train, y_test, hidden_size_s, T):
+        self.StudentTeacher = StudentTeacher
+        self.x_train = x_train
+        self.x_test = x_test
+        self.y_train = y_train
+        self.y_test = y_test
+        self.hidden_size_s = hidden_size_s
+        self.T = T
+        self.models = {}
+
+    def train_models(self):
+        for B in self.hidden_size_s:
+            self.models[B] = []
+            accuracy = []
+            for seed in range(self.T):
+                model = self.StudentTeacher(hidden_size_student=B)
+                model.fit(self.x_train, self.y_train)
+                accuracy.append(model.evaluate(self.x_test, self.y_test))
+                self.models[B].append(model)
+            print("2-Norm loss for B = {}: {:.4f}".format(B, np.mean(accuracy)))
+
+    def plot_models(self, R):
+        sns.set()
+        #plt.figure(figsize=(12, 8))
+        x = np.linspace(-0.5, 0.5, int(R))
+        for B in self.hidden_size_s:
+            nested_y = []
+            for model in self.models[B]:
+                y = model.predict(x)
+                nested_y.append(y)
+            num_lists = len(nested_y)
+            y_mean = [sum(col)/num_lists for col in zip(*nested_y)]
+            y_err = np.std(y_mean)
+            plt.errorbar(x, y_mean, yerr=y_err,fmt='o', ecolor='lightgray', markersize=5, capsize=2, label="B = {}".format(B))
+            plt.plot(x, y_mean, '-', color='C0', linewidth=2, label="B = {}".format(B))
+        plt.legend()
+        plt.xlabel("Input Value")
+        plt.ylabel("Prediction")
+        plt.title("Model Predictions for Different Network Widths")
+        plt.show()
+
+
+
+
+
+
+######################################################################################
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class StudentNet(nn.Module):
+    def __init__(self, input_size=1, hidden_size=16, output_size=1, depth=7):
+        super(StudentNet, self).__init__()
+        self.fc = nn.ModuleList()
+        self.fc.append(nn.Linear(input_size, hidden_size))
+        for i in range(depth - 2):
+            self.fc.append(nn.Linear(hidden_size, hidden_size))
+        self.fc.append(nn.Linear(hidden_size, output_size))
+
+    def forward(self, x):
+        for i in range(len(self.fc) - 1):
+            x = torch.relu(self.fc[i](x))
+        x = self.fc[-1](x)
+        return x
+
+class TeacherNet(nn.Module):
+    def __init__(self, input_size=1, hidden_size=32, output_size=1, depth=7):
+        super(TeacherNet, self).__init__()
+        self.fc = nn.ModuleList()
+        self.fc.append(nn.Linear(input_size, hidden_size))
+        for i in range(depth - 2):
+            self.fc.append(nn.Linear(hidden_size, hidden_size))
+        self.fc.append(nn.Linear(hidden_size, output_size))
+
+    def forward(self, x):
+        for i in range(len(self.fc) - 1):
+            x = torch.relu(self.fc[i](x))
+        x = self.fc[-1](x)
+        return x
+
+class StudentTeacher:
+    def __init__(self, input_size=1, hidden_size_student=10, hidden_size_teacher=30, output_size=1, depth_student=7, depth_teacher=7, lr=0.01, weight_decay=1e-5, epochs=100, device="cuda"):
+        self.criterion = None
+        self.input_size = input_size
+        self.hidden_size_student = hidden_size_student
+        self.hidden_size_teacher = hidden_size_teacher
+        self.output_size = output_size
+        self.depth_student = depth_student
+        self.depth_teacher = depth_teacher
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.epochs = epochs
+        self.alpha = 0.3
+        self.loss_history = []
+
+        self.student = StudentNet(input_size=self.input_size, hidden_size=self.hidden_size_student,
+                                  output_size=self.output_size, depth=self.depth_student).to(device)
+        self.teacher = TeacherNet(input_size=self.input_size, hidden_size=self.hidden_size_teacher,
+                                  output_size=self.output_size, depth=self.depth_teacher).to(device)
+
+    def fit(self, X, y, epochs=100):
+        self.epochs = epochs
+        criterion = nn.MSELoss()
+        self.criterion = criterion
+        optimizer_student = optim.Adam(self.student.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        optimizer_teacher = optim.Adam(self.teacher.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+
+        for epoch in range(self.epochs):
+            X = X.to(device)
+            y = y.to(device)
+
+            # train teacher network
+            optimizer_teacher.zero_grad()
+            y_teacher = self.teacher(X)
+            teacher_loss = criterion(y_teacher, y)
+            teacher_loss.backward()
+            optimizer_teacher.step()
+
+            # use teacher network to generate activations and predictions for student network
+            with torch.no_grad():
+                y_teacher_soft = F.softmax(y_teacher, dim=1)
+                #teacher_activations = self.teacher.get_activations(X)
+
+            # train student network using teacher activations and predictions
+            optimizer_student.zero_grad()
+            y_pred = self.student(X)
+            student_loss = criterion(y_pred, y)
+            distillation_loss = F.kl_div(F.softmax(y_pred, dim=1), y_teacher_soft,
+                                         reduction='batchmean')
+            total_loss = (1 - self.alpha) * student_loss + self.alpha * distillation_loss
+            self.loss_history.append(total_loss)
+            total_loss.backward()
+            optimizer_student.step()
+
+    def predict(self, x):
+        df = pd.DataFrame()
+        df["x"] = pd.DataFrame(x)
+        x = pd.DataFrame(df["x"])
+        X = np.stack([x[col].values for col in x.columns], 1)
+        X = torch.tensor(X, dtype=torch.float)
+        X = torch.tensor(X).to(device)
+        self.student.eval()
+        with torch.no_grad():
+            y_pred = self.student(X).cpu().numpy()
+        return y_pred
+
+    def evaluate(self, X, y):
+        X, y = X.cuda(), y.cuda()
+
+        with torch.no_grad():
+            # Make predictions with the student network
+            y_pred = self.student(X)
+
+            # Calculate the 2-norm between the predictions and the true labels
+            error = y_pred - y
+            norm = torch.norm(error, p=2).item()
+
+            # Calculate the mean squared error
+            mse = torch.mean(error ** 2).item()
+
+        return mse
+
+    def plot_loss(self):
+        losses = [t.cpu().detach().numpy() for t in self.loss_history]
+        plt.plot(losses)
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.yscale('log')
+        plt.title('Training Loss over Epochs')
+        plt.show()
